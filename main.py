@@ -82,7 +82,8 @@ def scan_all_taiwan_stocks():
             # 避免 API 頻繁請求限制
             time.sleep(0.3) 
             
-        except Exception:
+        except Exception as e:
+            print(f"篩選失敗: {e}")
             continue
 
     send_telegram_msg(f"✅ 今日掃描完畢，共發現 {match_count} 檔符合條件標的。")
