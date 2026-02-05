@@ -23,7 +23,7 @@ def send_telegram_msg(message):
 def scan_all_taiwan_stocks():
     dl = DataLoader()
     if FINMIND_TOKEN:
-        dl.login(api_token=FINMIND_TOKEN)
+        dl.api_token = FINMIND_TOKEN
     
     # 1. 取得全台股清單
     stock_info = dl.taiwan_stock_info()
