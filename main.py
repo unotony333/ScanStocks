@@ -47,7 +47,7 @@ def scan_all_taiwan_stocks():
 
             # 3. 條件篩選邏輯
             current_price = price_df['close'].iloc[-1]
-            high_52w = price_df['high'].max()
+            high_52w = price_df['max'].max()
             
             # 條件 1: 52週新高 (容許 1% 以內的誤差)
             if current_price < high_52w * 0.99:
@@ -83,7 +83,7 @@ def scan_all_taiwan_stocks():
             time.sleep(0.3) 
             
         except Exception as e:
-            print(f"篩選失敗: {e}")
+            print(f"跳過 {stock_id}，原因：{e}")
             continue
 
     send_telegram_msg(f"✅ 今日掃描完畢，共發現 {match_count} 檔符合條件標的。")
