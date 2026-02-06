@@ -9,11 +9,10 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN")
 
-api_call_count = 0  # 追蹤 API 呼叫次數
-error_log = []      # 記錄失敗的標的
+api_call_count = 0
+match_list = []  # 存儲成功標的代碼
 
 def send_telegram_msg(message):
-    """只用於核心通知"""
     if not TOKEN or not CHAT_ID:
         print(f"[TG 模擬] {message}")
         return
@@ -28,102 +27,90 @@ def send_telegram_msg(message):
         print(f"Telegram 發送失敗: {e}")
 
 def call_finmind_api(func, *args, **kwargs):
-    """
-    包裝 API 呼叫：含計數器、冷卻機制與重試邏輯
-    非必要通知改用 print
-    """
     global api_call_count
-    max_retries = 3
-    retry_delay = 5
-    
-    for attempt in range(max_retries):
+    max_retries = 2  # 即時重試次數
+    for attempt in range(max_retries + 1):
         try:
-            # 處理 600 次限制
             api_call_count += 1
             if api_call_count >= 590:
-                print(f"⏳ API 接近上限 ({api_call_count})，本地等待 1 小時...")
+                print(f"⏳ API 接近上限，本地暫停 1 小時...")
                 time.sleep(3605)
                 api_call_count = 1
-            
             return func(*args, **kwargs)
-            
         except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"⚠️ API 錯誤: {e}, 正在進行第 {attempt + 1} 次重試...")
-                time.sleep(retry_delay)
+            if attempt < max_retries:
+                time.sleep(5)
                 continue
-            else:
-                raise e
+            raise e
+
+def process_stock(dl, stock_id):
+    """核心選股邏輯，成功回傳訊息字串，失敗則拋出異常"""
+    # 1. 股價
+    price_df = call_finmind_api(dl.taiwan_stock_daily, stock_id=stock_id, start_date='2025-01-01')
+    if price_df.empty or len(price_df) < 60: return None
+
+    avg_vol = price_df['Trading_Volume'].tail(5).mean() / 1000
+    current_price = price_df['close'].iloc[-1]
+    max_price_52w = price_df['max'].max()
+    if avg_vol < 500 or current_price < max_price_52w * 0.99: return None
+
+    # 2. 本益比
+    pe_df = call_finmind_api(dl.taiwan_stock_per_pbr, stock_id=stock_id)
+    if pe_df.empty or pe_df['PE'].iloc[-1] <= 0 or pe_df['PE'].iloc[-1] > 12: return None
+
+    # 3. 營收
+    rev_df = call_finmind_api(dl.taiwan_stock_month_revenue, stock_id=stock_id).tail(3)
+    if rev_df.empty or rev_df['revenue_month_growth_rate'].mean() < 20: return None
+
+    return (f"🎯 【達標】 {stock_id}\n現價: {current_price}\n"
+            f"PE: {pe_df['PE'].iloc[-1]:.2f}\n"
+            f"營收YoY: {rev_df['revenue_month_growth_rate'].mean():.1f}%")
 
 def scan_tse_stocks():
     dl = DataLoader()
-    if FINMIND_TOKEN:
-        dl.api_token = FINMIND_TOKEN
+    if FINMIND_TOKEN: dl.api_token = FINMIND_TOKEN
     
     try:
-        # 取得上市清單 (必要時 print 日誌)
         stock_info = call_finmind_api(dl.taiwan_stock_info)
-        tse_list = stock_info[
-            (stock_info['industry_category'] != 'ETF') & 
-            (stock_info['type'] == 'twse') & 
-            (stock_info['stock_id'].str.len() == 4)
-        ]['stock_id'].tolist()
-        
-        print(f"🚀 開始掃描上市股共 {len(tse_list)} 檔...")
+        tse_list = stock_info[(stock_info['type'] == 'twse') & (stock_info['stock_id'].str.len() == 4)]['stock_id'].tolist()
+        print(f"🚀 開始掃描上市股 {len(tse_list)} 檔...")
     except Exception as e:
-        print(f"❌ 啟動失敗: {e}")
-        return
+        print(f"初始化失敗: {e}"); return
 
-    match_count = 0
-    results = []
+    failed_list = [] # 記錄徹底失敗的股票
 
+    # --- 第一輪主掃描 ---
     for stock_id in tse_list:
         try:
-            # --- 步驟 1: 股價 ---
-            price_df = call_finmind_api(dl.taiwan_stock_daily, stock_id=stock_id, start_date='2025-01-01')
-            
-            if price_df.empty or len(price_df) < 60:
-                continue
+            result = process_stock(dl, stock_id)
+            if result:
+                match_list.append(stock_id)
+                send_telegram_msg(result)
+        except Exception:
+            print(f"❌ {stock_id} 暫時失敗，加入二次重試清單")
+            failed_list.append(stock_id)
 
-            # 門檻過濾：均量 > 500張 & 52週新高
-            avg_vol = price_df['Trading_Volume'].tail(5).mean() / 1000
-            current_price = price_df['close'].iloc[-1]
-            max_price_52w = price_df['max'].max()
-            
-            if avg_vol < 500 or current_price < max_price_52w * 0.99:
-                continue
-
-            # --- 步驟 2: 本益比 ---
-            pe_df = call_finmind_api(dl.taiwan_stock_per_pbr(stock_id=stock_id))
-            if pe_df.empty or pe_df['PE'].iloc[-1] <= 0 or pe_df['PE'].iloc[-1] > 12:
-                continue
-
-            # --- 步驟 3: 營收 ---
-            rev_df = call_finmind_api(dl.taiwan_stock_month_revenue, stock_id=stock_id).tail(3)
-            if rev_df.empty or rev_df['revenue_month_growth_rate'].mean() < 20:
-                continue
-
-            # --- 🎯 必要通知：發現標的 ---
-            match_count += 1
-            msg = (f"🎯 【達標】 {stock_id}\n"
-                   f"現價: {current_price}\n"
-                   f"PE: {pe_df['PE'].iloc[-1]:.2f}\n"
-                   f"營收YoY: {rev_df['revenue_month_growth_rate'].mean():.1f}%")
-            
-            send_telegram_msg(msg)
-            print(f"✅ 發現標的：{stock_id}")
-
-        except Exception as e:
-            print(f"❌ {stock_id} 處理出錯: {e}")
-            error_log.append(stock_id)
-            continue
-
-    # --- 🎯 必要通知：掃描結算 ---
-    final_summary = f"🏁 掃描完畢。\n符合標的數: {match_count}"
-    if error_log:
-        final_summary += f"\n(註: 有 {len(error_log)} 檔執行失敗，請查看 Log)"
+    # --- 第二輪二次嘗試 (Final Retry) ---
+    if failed_list:
+        print(f"🔍 開始二次補償嘗試，剩餘 {len(failed_list)} 檔...")
+        time.sleep(10) # 稍微喘息一下再開始
+        
+        still_failed_count = 0
+        for stock_id in failed_list:
+            try:
+                result = process_stock(dl, stock_id)
+                if result:
+                    match_list.append(stock_id)
+                    send_telegram_msg(f"♻️ [補償成功]\n{result}")
+            except Exception as e:
+                print(f"💀 {stock_id} 最終仍失敗: {e}")
+                still_failed_count += 1
     
-    send_telegram_msg(final_summary)
+    # --- 總結回報 ---
+    summary = f"🏁 掃描完畢\n✅ 符合標的: {', '.join(match_list) if match_list else '無'}"
+    if failed_list:
+        summary += f"\n⚠️ 最終失敗數: {still_failed_count}"
+    send_telegram_msg(summary)
 
 if __name__ == "__main__":
     scan_tse_stocks()
