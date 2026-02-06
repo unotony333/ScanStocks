@@ -2,8 +2,8 @@ name: Daily Stock Screener
 
 on:
   schedule:
-    # 每天台灣時間週一至週五 15:30 執行 (UTC 07:30)
-    - cron: '30 7 * * 1-5'
+    # 每天台灣時間週一至週五 16:00 執行 (UTC 08:00)
+    - cron: '00 8 * * 1-5'
   workflow_dispatch: # 讓你可以手動點擊按鈕執行測試
 
 jobs:
