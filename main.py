@@ -118,7 +118,7 @@ def scan_tse_stocks():
             # 基礎延遲避免請求過快
             time.sleep(0.1)
 
-        except Exception:
+        except Exception as e:
             print(f"跳過 {stock_id}，原因：{e}")
             continue
 
